@@ -1,0 +1,2 @@
+* Track bigrams (only if the timing is within 500 ms)
+* Track into daywise files
