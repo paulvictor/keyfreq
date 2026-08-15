@@ -20,7 +20,6 @@
           };
 
       packages = {
-
         default = clj-nix.lib.mkCljApp {
           pkgs = nixpkgs.legacyPackages.${system};
           modules = [

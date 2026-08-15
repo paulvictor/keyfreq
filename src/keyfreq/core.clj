@@ -3,9 +3,11 @@
    [clojure.string :as string]
    [clojure.data.json :as json]
    [clojure.math :as math]
+   [clojure.core.async :as a]
    [clojure.java.io :as io])
-  (:import [java.io DataInputStream]
-           [java.nio ByteBuffer ByteOrder])
+  (:import [java.io DataInputStream FileWriter]
+           [java.nio ByteBuffer ByteOrder]
+           [java.lang Runtime Thread])
   (:gen-class))
 
 (defn strip-prefix [input prefix]
@@ -60,20 +62,59 @@
                    :key-up value
                    :when (usecs)))))
 
-(defn char-seq [input]
-  (with-open [in (DataInputStream. (io/input-stream input))]
-    (->> in
-         (partial read-event)
-         repeatedly
-         (filter #(= (:type %) EV_KEY))
-         (filter #(not= (:value %) HOLD_VAL))
-         (reductions with-mods init-key-state)
-         (filter (fn [{:keys [out key-up]}]
-                   (and (not= nil out)
-                        (= key-up 1))))
-         (map #(select-keys % [:out :when]))
-         (run! println))))
+(defn char-seq [input-stream]
+  (->> input-stream
+       (partial read-event)
+       repeatedly
+       (filter #(= (:type %) EV_KEY))
+       (filter #(not= (:value %) HOLD_VAL))
+       (reductions with-mods init-key-state)
+       (filter (fn [{:keys [out key-up]}]
+                 (and (not= nil out)
+                      (= key-up 1))))
+       (map #(select-keys % [:out :when]))))
+
+(defn handler [chan label]
+  (let [out (FileWriter. (str "keys-" (name label) ".out") true)]
+    (a/go-loop []
+      (let [c (a/<! chan)]
+        (if (some? c)
+          (do
+            (doto out (.write c) (.write "\n"))
+            (recur))
+          (doto out .flush .close))))))
+
+(defn bigrams-within [interval]
+  (fn [rf]
+    (let [vstate (volatile! {:prev nil
+                             :prev-when nil})]
+      (fn
+        ([] (rf))
+        ([result] ; when stream has ended, nothing to do, no more bigrams.
+         (rf result))
+        ([result {:keys [out when]}]
+         (if (not= out "BACKSPACE")
+           (let [prev (:prev @vstate)
+                 prev-when (:prev-when @vstate)]
+             (vreset! vstate {:prev out, :prev-when when})
+             (if (and prev prev-when
+                      (> interval (- when prev-when)))
+               (rf result
+                   (format "%s,%s" prev out)) ; Within the time limit, emit
+               result))
+           result))))))
 
 (defn -main [& args]
-  (char-seq "/dev/input/event25" ; Make this configurable
-            ))
+  (let [src (a/chan 10)
+        mux (a/mult src)
+        unigram-tap (a/tap mux (a/chan 10 (map :out)))
+        bigram-tap (a/tap mux (a/chan 10 (bigrams-within 500000)))
+        in (DataInputStream. (io/input-stream "/dev/input/event26"))
+        runtime (Runtime/getRuntime)]
+    (.addShutdownHook runtime (Thread. (fn []
+                                         (a/close! src))))
+    (handler unigram-tap :unigram)
+    (handler bigram-tap :bigram)
+    (->> in
+         char-seq
+         (run! #(a/go (a/>! src %))))))
