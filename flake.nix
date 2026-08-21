@@ -9,34 +9,30 @@
 
   outputs = { self, nixpkgs, flake-utils, clj-nix }:
 
-    flake-utils.lib.eachDefaultSystem (system: {
-
-      devShells.default =
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-          pkgs.mkShell {
-            buildInputs = with pkgs;[ clojure ];
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+        {
+          devShells.default =
+            pkgs.mkShell {
+              buildInputs = with pkgs;[ clojure ];
+            };
+          packages.default = clj-nix.lib.mkCljApp {
+            inherit pkgs;
+            modules = [
+              { # Option list: https://jlesquembre.github.io/clj-nix/options/
+                projectSrc = ./.;
+                version = "0.0.1";
+                name = "paul.victor/keyfreq";
+                main-ns = "keyfreq.core";
+              }
+            ];
           };
 
-      packages = {
-        default = clj-nix.lib.mkCljApp {
-          pkgs = nixpkgs.legacyPackages.${system};
-          modules = [
-            # Option list:
-            # https://jlesquembre.github.io/clj-nix/options/
-            {
-              projectSrc = ./.;
-              name = "me.lafuente/cljdemo";
-              main-ns = "keyfreq.core";
 
-              # nativeImage.enable = true;
-
-              # customJdk.enable = true;
-            }
-          ];
-        };
-
-      };
-    });
+        }) // {
+      overlays.default = import ./nix/overlay.nix { inherit clj-nix; };
+      nixosModules.default = import ./nix/module.nix;
+    };
 }
