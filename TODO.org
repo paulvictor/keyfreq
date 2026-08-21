@@ -1,6 +1,7 @@
-* Track bigrams (only if the timing is within 500 ms)
+* DONE Track bigrams (only if the timing is within 500 ms)
 * Track into daywise files
 * Try an example usage of nrepl.
 * Configure the input device(s) correctly
-* Handle shutdown signal
-* Take command line args
+** DONE Passed as an argument. Use a wrapper script
+* DONE Handle shutdown signal
+* DONE Take command line args

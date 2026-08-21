@@ -4,10 +4,12 @@
    [clojure.data.json :as json]
    [clojure.math :as math]
    [clojure.core.async :as a]
+   [clojure.tools.cli :refer [parse-opts]]
    [clojure.java.io :as io])
   (:import [java.io DataInputStream FileWriter]
            [java.nio ByteBuffer ByteOrder]
-           [java.lang Runtime Thread])
+           [java.nio.file Path Paths Files]
+           [java.lang Runtime Thread Integer])
   (:gen-class))
 
 (defn strip-prefix [input prefix]
@@ -16,7 +18,7 @@
     input))
 
 (def key-codes
-  (let [key-to-code (json/read (io/reader "./codes.json"))]
+  (let [key-to-code (json/read (io/reader (io/resource "codes.json")))]
     (into {}
           (map (fn [[k v]] [v k]))
           key-to-code)))
@@ -74,15 +76,18 @@
                       (= key-up 1))))
        (map #(select-keys % [:out :when]))))
 
-(defn handler [chan label]
-  (let [out (FileWriter. (str "keys-" (name label) ".out") true)]
-    (a/go-loop []
-      (let [c (a/<! chan)]
-        (if (some? c)
-          (do
-            (doto out (.write c) (.write "\n"))
-            (recur))
-          (doto out .flush .close))))))
+(defn handler [chan label ^Path prefix]
+  (let [out
+        (FileWriter.
+         (.toString (.resolve prefix (str (name label) "-keys.out"))) true)]
+    (a/thread
+      (loop []
+        (let [c (a/<!! chan)]
+          (if (some? c)
+            (do
+              (doto out (.write c) (.write "\n") (.flush))
+              (recur))
+            (doto out .flush .close)))))))
 
 (defn bigrams-within [interval]
   (fn [rf]
@@ -104,17 +109,30 @@
                result))
            result))))))
 
+(def cli-opts-spec
+  (letfn [(str->path [s]
+            (Paths/get s (make-array String 0)))]
+    [["-k" "--keyboard DEVICE" "Device to start tracking keys"]
+     ["-t" "--bigrams-within TIME" "Time between keystrokes to count towards bigrams"
+      :parse-fn #(Integer/parseInt %)
+      :default 500000]
+     ["-d" "--directory DIRECTORY" "File path used as prefix for the output files"
+      :parse-fn str->path
+      :default (str->path (System/getProperty "user.dir"))]]))
+
 (defn -main [& args]
-  (let [src (a/chan 10)
+  (let [cli-opts (:options
+                  (parse-opts args cli-opts-spec))
+        src (a/chan 30)
         mux (a/mult src)
         unigram-tap (a/tap mux (a/chan 10 (map :out)))
-        bigram-tap (a/tap mux (a/chan 10 (bigrams-within 500000)))
+        bigram-tap (a/tap mux (a/chan 10 (bigrams-within (:bigrams-within cli-opts))))
         in (DataInputStream. (io/input-stream "/dev/input/event26"))
         runtime (Runtime/getRuntime)]
     (.addShutdownHook runtime (Thread. (fn []
                                          (a/close! src))))
-    (handler unigram-tap :unigram)
-    (handler bigram-tap :bigram)
+    (handler unigram-tap :unigram (:directory cli-opts))
+    (handler bigram-tap :bigram (:directory cli-opts))
     (->> in
          char-seq
-         (run! #(a/go (a/>! src %))))))
+         (run! #(a/>!! src %)))))
